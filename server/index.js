@@ -10,7 +10,8 @@ app.use(cors());
 app.use(express.json());
 
 const RECALL_API_KEY = process.env.RECALL_API_KEY;
-const RECALL_API_BASE_URL = 'https://api.recall.ai/api/v1';
+// Modified Base Url for Beta Account Setup
+const RECALL_API_BASE_URL = process.env.RECALL_API_BASE_URL ;
 
 const recallApi = axios.create({
   baseURL: RECALL_API_BASE_URL,
