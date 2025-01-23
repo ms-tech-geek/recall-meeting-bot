@@ -10,23 +10,35 @@ interface Recording {
   duration?: number;
 }
 
-// Get environment variables with defaults
-const POLL_INTERVAL = parseInt(import.meta.env.POLL_INTERVAL || '20000');
-const API_TIMEOUT = parseInt(import.meta.env.API_TIMEOUT || '120000');
+interface BotStatus {
+  id: string;
+  status: string;
+  recordings: Recording[];
+  created_at: string;
+  bot_name: string;
+  join_at: string;
+  meeting_url: {
+    platform: string;
+  };
+}
+
+// Get environment variables through Vite's import.meta.env
+const API_TIMEOUT = import.meta.env.VITE_API_TIMEOUT || 60000;
+const POLL_INTERVAL = import.meta.env.VITE_POLL_INTERVAL || 10000;
 
 function App() {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [botId, setBotId] = useState('');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
+  const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const API = axios.create({
     baseURL: 'http://localhost:3000/api',
-    timeout: API_TIMEOUT
+    timeout: Number(API_TIMEOUT)
   });
 
   useEffect(() => {
@@ -35,20 +47,33 @@ function App() {
     };
   }, [pollingInterval]);
 
+  // Effect to start polling when botId is set
+  useEffect(() => {
+    if (botId) {
+      startPolling();
+    }
+  }, [botId]);
+
   const createBot = async () => {
     try {
       setLoading(true);
       setError(null);
-      setStatus('Creating bot and joining meeting...');
+      setStatus('Creating bot...');
       
       const response = await API.post('/create-bot', {
         meeting_url: meetingUrl
       });
       
-      setBotId(response.data.bot_id);
-      setStatus('Bot created! Waiting for bot to join meeting (this may take a few minutes)...');
-      setRetryCount(0);
-      startPolling(response.data.bot_id);
+      // Extract bot ID from response
+      const newBotId = response.data.id;
+      if (!newBotId) {
+        throw new Error('No bot ID received from server');
+      }
+
+      setBotId(newBotId);
+      setBotStatus(response.data);
+      setStatus('Bot created successfully! Waiting for bot to join meeting...');
+      
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || error.message;
       setError(errorMessage);
@@ -58,84 +83,60 @@ function App() {
     }
   };
 
-  const startPolling = (id: string) => {
+  const startPolling = () => {
     if (pollingInterval) clearInterval(pollingInterval);
 
-    const interval = setInterval(async () => {
-      try {
-        const response = await API.get(`/bot/${id}`);
-        const botStatus = response.data.status;
-        const currentRecordings = response.data.recordings || [];
-        setError(null);
-        
-        switch (botStatus) {
-          case 'joining':
-            setStatus(`Bot is joining the meeting... This may take a few minutes. (Attempt ${retryCount + 1})`);
-            break;
-          case 'joined':
-            setStatus('Bot has joined the meeting and is recording');
-            break;
-          case 'left':
-          case 'ended':
-            setStatus('Meeting ended. Processing recordings...');
-            clearInterval(interval);
-            setPollingInterval(null);
-            setTimeout(() => getRecordings(id), 10000);
-            break;
-          default:
-            setStatus(`Bot status: ${botStatus}`);
-        }
-        
-        if (currentRecordings.length > 0) {
-          setRecordings(currentRecordings);
-        }
-        
-        setRetryCount(0);
-      } catch (error: any) {
-        const errorMessage = error.response?.data?.error || error.message;
-        console.error('Poll error:', errorMessage);
-        
-        setRetryCount(prev => {
-          const newCount = prev + 1;
-          if (newCount > 5) {
-            clearInterval(interval);
-            setPollingInterval(null);
-            setError('Too many errors occurred. Please try again.');
-            return newCount;
-          }
-          setStatus(`Checking status (attempt ${newCount}/5)...`);
-          return newCount;
-        });
-      }
-    }, POLL_INTERVAL);
+    // Initial status check
+    checkBotStatus();
+
+    const interval = setInterval(() => {
+      checkBotStatus();
+    }, Number(POLL_INTERVAL));
 
     setPollingInterval(interval);
   };
 
-  const getRecordings = async (id: string) => {
+  const checkBotStatus = async () => {
+    if (!botId) return;
+
     try {
-      setStatus('Checking for recordings...');
-      const response = await API.get(`/bot/${id}/recordings`);
-      const newRecordings = response.data.recordings || [];
+      const response = await API.get(`/bot/${botId}`);
+      const data = response.data;
+      setBotStatus(data);
+      setError(null);
       
-      if (newRecordings.length > 0) {
-        setRecordings(newRecordings);
-        setStatus('Recordings are ready!');
-        setError(null);
-      } else {
-        setStatus('No recordings found yet. Checking again in 30 seconds...');
-        if (retryCount < 5) {
-          setRetryCount(prev => prev + 1);
-          setTimeout(() => getRecordings(id), 30000);
-        } else {
-          setError('No recordings found after multiple attempts. Please check the Recall dashboard.');
-        }
+      // Update recordings if available
+      if (data.recordings?.length > 0) {
+        setRecordings(data.recordings);
+      }
+      
+      // Update status message based on bot status
+      switch (data.status) {
+        case 'joining':
+          setStatus('Bot is attempting to join the meeting...');
+          break;
+        case 'joined':
+          setStatus('Bot has successfully joined the meeting and is recording');
+          break;
+        case 'left':
+        case 'ended':
+          setStatus('Meeting has ended');
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+            setPollingInterval(null);
+          }
+          break;
+        default:
+          setStatus(`Bot status: ${data.status}`);
       }
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || error.message;
-      setError(errorMessage);
-      setStatus('Failed to fetch recordings');
+      setError(`Failed to get bot status: ${errorMessage}`);
     }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString();
   };
 
   return (
@@ -158,10 +159,11 @@ function App() {
                 onChange={(e) => setMeetingUrl(e.target.value)}
                 placeholder="Enter Teams/Zoom/Meet URL"
                 className="flex-1 rounded-md border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={loading || !!botId}
               />
               <button
                 onClick={createBot}
-                disabled={loading || !meetingUrl}
+                disabled={loading || !meetingUrl || !!botId}
                 className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-2"
               >
                 <LinkIcon size={18} />
@@ -170,13 +172,30 @@ function App() {
             </div>
           </div>
 
+          {/* Bot Status Section */}
+          {botStatus && (
+            <div className="mb-6 p-4 rounded-md bg-gray-50">
+              <h2 className="text-lg font-semibold mb-2">Bot Information</h2>
+              <div className="space-y-2">
+                <p><span className="font-medium">Bot ID:</span> {botStatus.id}</p>
+                <p><span className="font-medium">Name:</span> {botStatus.bot_name}</p>
+                <p><span className="font-medium">Status:</span> {botStatus.status}</p>
+                <p><span className="font-medium">Platform:</span> {botStatus.meeting_url.platform}</p>
+                <p><span className="font-medium">Created:</span> {formatDate(botStatus.created_at)}</p>
+                <p><span className="font-medium">Join Time:</span> {formatDate(botStatus.join_at)}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Status and Error Messages */}
           {(status || error) && (
-            <div className={`mb-6 p-4 rounded-md ${error ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-700'}`}>
+            <div className={`mb-6 p-4 rounded-md ${error ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}`}>
               {status && <p className="mb-2">{status}</p>}
               {error && <p className="font-medium text-red-600">{error}</p>}
             </div>
           )}
 
+          {/* Recordings Section */}
           {recordings.length > 0 && (
             <div className="border-t pt-6">
               <h2 className="text-xl font-semibold mb-4">Recordings</h2>
@@ -194,6 +213,9 @@ function App() {
                             Duration: {Math.round(recording.duration / 60)} minutes
                           </p>
                         )}
+                        <p className="text-sm text-gray-600">
+                          Created: {formatDate(recording.created_at)}
+                        </p>
                       </div>
                       {recording.download_url && (
                         <a
