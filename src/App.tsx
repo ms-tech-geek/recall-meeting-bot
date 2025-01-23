@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Video, VideoOff, Link as LinkIcon } from 'lucide-react';
 import axios from 'axios';
 
@@ -8,6 +8,16 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [recordings, setRecordings] = useState<any[]>([]);
+  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+
+  // Cleanup polling on component unmount
+  useEffect(() => {
+    return () => {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+    };
+  }, [pollingInterval]);
 
   const createBot = async () => {
     try {
@@ -23,41 +33,73 @@ function App() {
       
       // Start polling for bot status
       startPolling(response.data.bot_id);
-    } catch (error) {
-      setStatus('Error creating bot: ' + (error as Error).message);
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message;
+      setStatus('Error creating bot: ' + errorMessage);
     } finally {
       setLoading(false);
     }
   };
 
   const startPolling = (id: string) => {
+    // Clear any existing polling interval
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+    }
+
     const interval = setInterval(async () => {
       try {
         const response = await axios.get(`http://localhost:3000/api/bot/${id}`);
         const botStatus = response.data.status;
+        const currentRecordings = response.data.recordings || [];
         
         setStatus(`Bot status: ${botStatus}`);
         
+        // Update recordings if they exist
+        if (currentRecordings.length > 0) {
+          setRecordings(currentRecordings);
+        }
+        
+        // Check for meeting end conditions
         if (botStatus === 'ended' || botStatus === 'left') {
           clearInterval(interval);
-          // Fetch recordings after 10 seconds
+          setStatus('Meeting ended. Waiting for recordings...');
+          
+          // Wait 10 seconds before final recordings check
           setTimeout(() => getRecordings(id), 10000);
         }
-      } catch (error) {
-        clearInterval(interval);
-        setStatus('Error polling bot status: ' + (error as Error).message);
+      } catch (error: any) {
+        const errorMessage = error.response?.data?.error || error.message;
+        setStatus('Error checking bot status: ' + errorMessage);
+        
+        // Don't clear interval on temporary errors
+        if (error.response?.status === 404) {
+          clearInterval(interval);
+          setStatus('Bot not found or expired');
+        }
       }
-    }, 5000); // Poll every 5 seconds
+    }, 5000);
+
+    setPollingInterval(interval);
   };
 
   const getRecordings = async (id: string) => {
     try {
-      setStatus('Fetching recordings...');
+      setStatus('Fetching final recordings...');
       const response = await axios.get(`http://localhost:3000/api/bot/${id}/recordings`);
-      setRecordings(response.data.recordings || []);
-      setStatus('Recordings retrieved successfully!');
-    } catch (error) {
-      setStatus('Error fetching recordings: ' + (error as Error).message);
+      const newRecordings = response.data.recordings || [];
+      
+      if (newRecordings.length > 0) {
+        setRecordings(newRecordings);
+        setStatus('Recordings are ready!');
+      } else {
+        setStatus('No recordings found. They might be still processing...');
+        // Try again in 30 seconds if no recordings found
+        setTimeout(() => getRecordings(id), 30000);
+      }
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message;
+      setStatus('Error fetching recordings: ' + errorMessage);
     }
   };
 
@@ -111,6 +153,11 @@ function App() {
                         <p className="text-sm text-gray-600">
                           Status: {recording.status}
                         </p>
+                        {recording.duration && (
+                          <p className="text-sm text-gray-600">
+                            Duration: {Math.round(recording.duration / 60)} minutes
+                          </p>
+                        )}
                       </div>
                       {recording.download_url && (
                         <a
