@@ -1,21 +1,35 @@
-import React, { useState, useEffect } from 'react';
-import { Video, VideoOff, Link as LinkIcon } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Video, Link as LinkIcon } from 'lucide-react';
 import axios from 'axios';
+
+interface Recording {
+  id: string;
+  status: string;
+  download_url?: string;
+  created_at: string;
+  duration?: number;
+}
 
 function App() {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [botId, setBotId] = useState('');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
-  const [recordings, setRecordings] = useState<any[]>([]);
+  const [recordings, setRecordings] = useState<Recording[]>([]);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
 
-  // Cleanup polling on component unmount
+  const RECALL_API_KEY = import.meta.env.VITE_RECALL_API_KEY;
+  const RECALL_API = axios.create({
+    baseURL: import.meta.env.VITE_RECALL_API_BASE_URL,
+    headers: {
+      'Authorization': `Token ${RECALL_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  });
+
   useEffect(() => {
     return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
+      if (pollingInterval) clearInterval(pollingInterval);
     };
   }, [pollingInterval]);
 
@@ -24,83 +38,70 @@ function App() {
       setLoading(true);
       setStatus('Creating bot and joining meeting...');
       
-      const response = await axios.post('http://localhost:3000/api/create-bot', {
-        meeting_url: meetingUrl
+      const response = await RECALL_API.post('/bot', {
+        meeting_url: meetingUrl,
+        bot_name: 'Recording Bot',
+        recording: true
       });
       
       setBotId(response.data.bot_id);
-      setStatus('Bot successfully joined the meeting!');
-      
-      // Start polling for bot status
+      setStatus('Bot created! Waiting to join meeting...');
       startPolling(response.data.bot_id);
     } catch (error: any) {
-      const errorMessage = error.response?.data?.error || error.message;
-      setStatus('Error creating bot: ' + errorMessage);
+      console.error('Create bot error:', error.response?.data || error.message);
+      setStatus('Error creating bot: ' + (error.response?.data?.detail || error.message));
     } finally {
       setLoading(false);
     }
   };
 
   const startPolling = (id: string) => {
-    // Clear any existing polling interval
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-    }
+    if (pollingInterval) clearInterval(pollingInterval);
 
     const interval = setInterval(async () => {
       try {
-        const response = await axios.get(`http://localhost:3000/api/bot/${id}`);
+        const response = await RECALL_API.get(`/bot/${id}`);
         const botStatus = response.data.status;
         const currentRecordings = response.data.recordings || [];
         
-        setStatus(`Bot status: ${botStatus}`);
+        switch (botStatus) {
+          case 'joining':
+            setStatus('Bot is joining the meeting...');
+            break;
+          case 'joined':
+            setStatus('Bot has joined the meeting and is recording');
+            break;
+          case 'left':
+          case 'ended':
+            setStatus('Meeting ended. Checking recordings...');
+            clearInterval(interval);
+            setPollingInterval(null);
+            if (currentRecordings.length > 0) {
+              setRecordings(currentRecordings);
+              setStatus('Recordings are ready!');
+            }
+            break;
+          default:
+            setStatus(`Bot status: ${botStatus}`);
+        }
         
-        // Update recordings if they exist
         if (currentRecordings.length > 0) {
           setRecordings(currentRecordings);
         }
-        
-        // Check for meeting end conditions
-        if (botStatus === 'ended' || botStatus === 'left') {
-          clearInterval(interval);
-          setStatus('Meeting ended. Waiting for recordings...');
-          
-          // Wait 10 seconds before final recordings check
-          setTimeout(() => getRecordings(id), 10000);
-        }
       } catch (error: any) {
-        const errorMessage = error.response?.data?.error || error.message;
-        setStatus('Error checking bot status: ' + errorMessage);
+        console.error('Poll error:', error.response?.data || error.message);
+        const errorMsg = error.response?.data?.detail || error.message;
+        setStatus(`Error checking status: ${errorMsg}`);
         
-        // Don't clear interval on temporary errors
         if (error.response?.status === 404) {
           clearInterval(interval);
-          setStatus('Bot not found or expired');
+          setPollingInterval(null);
+          setStatus('Bot not found or session expired');
         }
       }
     }, 5000);
 
     setPollingInterval(interval);
-  };
-
-  const getRecordings = async (id: string) => {
-    try {
-      setStatus('Fetching final recordings...');
-      const response = await axios.get(`http://localhost:3000/api/bot/${id}/recordings`);
-      const newRecordings = response.data.recordings || [];
-      
-      if (newRecordings.length > 0) {
-        setRecordings(newRecordings);
-        setStatus('Recordings are ready!');
-      } else {
-        setStatus('No recordings found. They might be still processing...');
-        // Try again in 30 seconds if no recordings found
-        setTimeout(() => getRecordings(id), 30000);
-      }
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.error || error.message;
-      setStatus('Error fetching recordings: ' + errorMessage);
-    }
   };
 
   return (
@@ -136,8 +137,8 @@ function App() {
           </div>
 
           {status && (
-            <div className="mb-6 p-4 bg-gray-50 rounded-md">
-              <p className="text-gray-700">{status}</p>
+            <div className={`mb-6 p-4 rounded-md ${status.includes('Error') ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-700'}`}>
+              <p>{status}</p>
             </div>
           )}
 
@@ -145,11 +146,11 @@ function App() {
             <div className="border-t pt-6">
               <h2 className="text-xl font-semibold mb-4">Recordings</h2>
               <div className="space-y-4">
-                {recordings.map((recording, index) => (
-                  <div key={index} className="bg-gray-50 p-4 rounded-md">
+                {recordings.map((recording) => (
+                  <div key={recording.id} className="bg-gray-50 p-4 rounded-md">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="font-medium">Recording {index + 1}</p>
+                        <p className="font-medium">Recording {recording.id}</p>
                         <p className="text-sm text-gray-600">
                           Status: {recording.status}
                         </p>
