@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Video, Link as LinkIcon } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Video, VideoOff, Link as LinkIcon } from 'lucide-react';
 import axios from 'axios';
 
 interface Recording {
@@ -17,14 +17,12 @@ function App() {
   const [status, setStatus] = useState('');
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-  const RECALL_API_KEY = import.meta.env.VITE_RECALL_API_KEY;
-  const RECALL_API = axios.create({
-    baseURL: import.meta.env.VITE_RECALL_API_BASE_URL,
-    headers: {
-      'Authorization': `Token ${RECALL_API_KEY}`,
-      'Content-Type': 'application/json'
-    }
+  const API = axios.create({
+    baseURL: 'http://localhost:3000/api',
+    timeout: 30000
   });
 
   useEffect(() => {
@@ -36,20 +34,21 @@ function App() {
   const createBot = async () => {
     try {
       setLoading(true);
+      setError(null);
       setStatus('Creating bot and joining meeting...');
       
-      const response = await RECALL_API.post('/bot', {
-        meeting_url: meetingUrl,
-        bot_name: 'Recording Bot',
-        recording: true
+      const response = await API.post('/create-bot', {
+        meeting_url: meetingUrl
       });
       
       setBotId(response.data.bot_id);
       setStatus('Bot created! Waiting to join meeting...');
+      setRetryCount(0);
       startPolling(response.data.bot_id);
     } catch (error: any) {
-      console.error('Create bot error:', error.response?.data || error.message);
-      setStatus('Error creating bot: ' + (error.response?.data?.detail || error.message));
+      const errorMessage = error.response?.data?.error || error.message;
+      setError(errorMessage);
+      setStatus('Failed to create bot');
     } finally {
       setLoading(false);
     }
@@ -60,26 +59,24 @@ function App() {
 
     const interval = setInterval(async () => {
       try {
-        const response = await RECALL_API.get(`/bot/${id}`);
+        const response = await API.get(`/bot/${id}`);
         const botStatus = response.data.status;
         const currentRecordings = response.data.recordings || [];
+        setError(null);
         
         switch (botStatus) {
           case 'joining':
-            setStatus('Bot is joining the meeting...');
+            setStatus('Bot is joining the meeting... This may take a few moments.');
             break;
           case 'joined':
             setStatus('Bot has joined the meeting and is recording');
             break;
           case 'left':
           case 'ended':
-            setStatus('Meeting ended. Checking recordings...');
+            setStatus('Meeting ended. Processing recordings...');
             clearInterval(interval);
             setPollingInterval(null);
-            if (currentRecordings.length > 0) {
-              setRecordings(currentRecordings);
-              setStatus('Recordings are ready!');
-            }
+            setTimeout(() => getRecordings(id), 10000);
             break;
           default:
             setStatus(`Bot status: ${botStatus}`);
@@ -88,20 +85,53 @@ function App() {
         if (currentRecordings.length > 0) {
           setRecordings(currentRecordings);
         }
-      } catch (error: any) {
-        console.error('Poll error:', error.response?.data || error.message);
-        const errorMsg = error.response?.data?.detail || error.message;
-        setStatus(`Error checking status: ${errorMsg}`);
         
-        if (error.response?.status === 404) {
-          clearInterval(interval);
-          setPollingInterval(null);
-          setStatus('Bot not found or session expired');
-        }
+        setRetryCount(0);
+      } catch (error: any) {
+        const errorMessage = error.response?.data?.error || error.message;
+        console.error('Poll error:', errorMessage);
+        
+        setRetryCount(prev => {
+          const newCount = prev + 1;
+          if (newCount > 5) {
+            clearInterval(interval);
+            setPollingInterval(null);
+            setError('Too many errors occurred. Please try again.');
+            return newCount;
+          }
+          setStatus(`Checking status (attempt ${newCount}/5)...`);
+          return newCount;
+        });
       }
     }, 5000);
 
     setPollingInterval(interval);
+  };
+
+  const getRecordings = async (id: string) => {
+    try {
+      setStatus('Checking for recordings...');
+      const response = await API.get(`/bot/${id}/recordings`);
+      const newRecordings = response.data.recordings || [];
+      
+      if (newRecordings.length > 0) {
+        setRecordings(newRecordings);
+        setStatus('Recordings are ready!');
+        setError(null);
+      } else {
+        setStatus('No recordings found yet. Checking again in 30 seconds...');
+        if (retryCount < 5) {
+          setRetryCount(prev => prev + 1);
+          setTimeout(() => getRecordings(id), 30000);
+        } else {
+          setError('No recordings found after multiple attempts. Please check the Recall dashboard.');
+        }
+      }
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message;
+      setError(errorMessage);
+      setStatus('Failed to fetch recordings');
+    }
   };
 
   return (
@@ -136,9 +166,10 @@ function App() {
             </div>
           </div>
 
-          {status && (
-            <div className={`mb-6 p-4 rounded-md ${status.includes('Error') ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-700'}`}>
-              <p>{status}</p>
+          {(status || error) && (
+            <div className={`mb-6 p-4 rounded-md ${error ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-700'}`}>
+              {status && <p className="mb-2">{status}</p>}
+              {error && <p className="font-medium text-red-600">{error}</p>}
             </div>
           )}
 
