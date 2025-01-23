@@ -28,13 +28,16 @@ app.post('/api/create-bot', async (req, res) => {
     
     const response = await recallApi.post('/bot', {
       meeting_url,
-      bot_name: 'Recording Bot',
+      bot_name: 'HyreWorks Bot',
       recording: true
     });
 
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Create bot error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: error.response?.data?.detail || error.message 
+    });
   }
 });
 
@@ -43,9 +46,21 @@ app.get('/api/bot/:botId', async (req, res) => {
   try {
     const { botId } = req.params;
     const response = await recallApi.get(`/bot/${botId}`);
-    res.json(response.data);
+    
+    // Add more detailed status information
+    const status = {
+      status: response.data.status,
+      created_at: response.data.created_at,
+      meeting_code: response.data.meeting_code,
+      recordings: response.data.recordings || []
+    };
+    
+    res.json(status);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Get bot status error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: error.response?.data?.detail || error.message 
+    });
   }
 });
 
@@ -54,9 +69,23 @@ app.get('/api/bot/:botId/recordings', async (req, res) => {
   try {
     const { botId } = req.params;
     const response = await recallApi.get(`/bot/${botId}`);
-    res.json({ recordings: response.data.recordings || [] });
+    
+    // Check if recordings exist and are ready
+    const recordings = response.data.recordings || [];
+    const processedRecordings = recordings.map(recording => ({
+      id: recording.id,
+      status: recording.status,
+      download_url: recording.download_url,
+      created_at: recording.created_at,
+      duration: recording.duration
+    }));
+    
+    res.json({ recordings: processedRecordings });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Get recordings error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: error.response?.data?.detail || error.message 
+    });
   }
 });
 
