@@ -50,6 +50,7 @@ function App() {
   // Effect to start polling when botId is set
   useEffect(() => {
     if (botId) {
+      console.log('Bot ID set, starting polling...');
       startPolling();
     }
   }, [botId]);
@@ -59,6 +60,7 @@ function App() {
       setLoading(true);
       setError(null);
       setStatus('Creating bot...');
+      console.log('Creating bot with meeting URL:', meetingUrl);
       
       const response = await API.post('/create-bot', {
         meeting_url: meetingUrl
@@ -70,12 +72,14 @@ function App() {
         throw new Error('No bot ID received from server');
       }
 
+      console.log('Bot created with ID:', newBotId);
       setBotId(newBotId);
       setBotStatus(response.data);
       setStatus('Bot created successfully! Waiting for bot to join meeting...');
       
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || error.message;
+      console.error('Error creating bot:', errorMessage);
       setError(errorMessage);
       setStatus('Failed to create bot');
     } finally {
@@ -86,6 +90,7 @@ function App() {
   const startPolling = () => {
     if (pollingInterval) clearInterval(pollingInterval);
 
+    console.log('Starting polling for bot status...');
     // Initial status check
     checkBotStatus();
 
@@ -100,8 +105,10 @@ function App() {
     if (!botId) return;
 
     try {
+      console.log('Checking bot status for bot ID:', botId);
       const response = await API.get(`/bot/${botId}`);
       const data = response.data;
+      console.log('Bot status received:', data);
       setBotStatus(data);
       setError(null);
       
@@ -131,6 +138,7 @@ function App() {
       }
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || error.message;
+      console.error('Error checking bot status:', errorMessage);
       setError(`Failed to get bot status: ${errorMessage}`);
     }
   };
