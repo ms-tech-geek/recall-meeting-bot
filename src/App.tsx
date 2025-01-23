@@ -10,6 +10,10 @@ interface Recording {
   duration?: number;
 }
 
+// Get environment variables with defaults
+const POLL_INTERVAL = parseInt(import.meta.env.POLL_INTERVAL || '20000');
+const API_TIMEOUT = parseInt(import.meta.env.API_TIMEOUT || '120000');
+
 function App() {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [botId, setBotId] = useState('');
@@ -22,7 +26,7 @@ function App() {
 
   const API = axios.create({
     baseURL: 'http://localhost:3000/api',
-    timeout: 30000
+    timeout: API_TIMEOUT
   });
 
   useEffect(() => {
@@ -42,7 +46,7 @@ function App() {
       });
       
       setBotId(response.data.bot_id);
-      setStatus('Bot created! Waiting to join meeting...');
+      setStatus('Bot created! Waiting for bot to join meeting (this may take a few minutes)...');
       setRetryCount(0);
       startPolling(response.data.bot_id);
     } catch (error: any) {
@@ -66,7 +70,7 @@ function App() {
         
         switch (botStatus) {
           case 'joining':
-            setStatus('Bot is joining the meeting... This may take a few moments.');
+            setStatus(`Bot is joining the meeting... This may take a few minutes. (Attempt ${retryCount + 1})`);
             break;
           case 'joined':
             setStatus('Bot has joined the meeting and is recording');
@@ -103,7 +107,7 @@ function App() {
           return newCount;
         });
       }
-    }, 5000);
+    }, POLL_INTERVAL);
 
     setPollingInterval(interval);
   };
